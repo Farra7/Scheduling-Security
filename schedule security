@@ -1,0 +1,95 @@
+using Pkg
+using Plots
+using JuMP
+using GLPK
+
+# Parameters
+N = 90 # Number of staff members (example)
+J = 3  # Number of shifts per day
+K = 7  # Number of days in a week
+W = [
+    19 16 22 22 22 22 22;  # Morning (M)
+    19 16 22 22 22 22 22;  # Evening (E)
+    14 11 16 16 16 16 16   # Night (N)
+]
+
+A = [
+    0  0  0  0  0  0  0;  # Morning (M)
+    1  0  8  6  6  8  5;  # Evening (E)
+    0  0  1  2  2  2  3   # Night (N)
+]
+
+# Model definition
+model = Model(GLPK.Optimizer)
+
+# Variables
+@variable(model, x[1:N, 1:J, 1:K], Bin) # Binary variables
+
+# Objective function
+@objective(model, Min, sum(x[i, j, k] for i in 1:N, j in 1:J, k in 1:K))
+
+# Constraints (8, 9, 10): At most two staff per shift
+for i in 1:N, k in 1:K
+    @constraint(model, x[i, 1, k] + x[i, 2, k] + x[i, 3, k] <= 2) # Eq (8)
+    @constraint(model, x[i, 2, k] + x[i, 3, k] + x[i, 1, (k % 7) + 1] <= 2) # Eq (9)
+    @constraint(model, x[i, 3, k] + x[i, 1, (k % 7) + 1] + x[i, 2, (k % 7) + 1] <= 2) # Eq (10)
+end
+
+# Constraints (11, 12): Workload requirements
+for j in 1:J, k in 1:K
+    @constraint(model, sum(x[i, j, k] for i in 1:N) >= W[j, k]) # Eq (11)
+    @constraint(model, sum(x[i, j, k] for i in 1:N) <= W[j, k] + A[j, k]) # Eq (12)
+end
+
+for i in 1:N, k in 1:7
+    @constraint(model, sum(x[i, j, (i - 1) % J + 1] + x[i, j, (i + 1) % J + 1] for j in 1:J) <= 1) # Eq (13)
+end
+
+# Relax or modify Constraint (14): Minimum coverage
+for i in 1:N, k in 1:7
+    @constraint(model, sum(x[i, j, (i + k) % J + 1] for j in 1:J) >= 0) # Eq (14)
+end
+
+# Function to calculate normalized total cost
+function C_over_S(N)
+    max_term = max(0, 0.245 * (395 - 5 * N))
+    return N + max_term
+end
+
+# Use a different variable name for the result of C_over_S
+normalized_cost = C_over_S(N)
+
+# Define the NMT function (no conflict now)
+function NMT(N)
+    max_term = max(0, 0.245 * (395 - 5 * N))
+    return N + max_term
+end
+
+# Create a range of N values
+N_values = 70:90
+
+# Calculate NMT for each N in the range
+NMT_values = [NMT(N) for N in N_values]
+
+# Plot the results
+plt = plot(N_values, NMT_values, label="NMT", xlabel="N", ylabel="NMT", title="NMT vs N", legend=:topright)
+display(plt)
+
+# Solve the model
+optimize!(model)
+
+# Display shift assignments
+for i in 1:N, j in 1:J, k in 1:K
+    if value(x[i, j, k]) > 0.5
+        println("Worker $i is assigned to shift $j on day $k")
+    end
+end
+
+# Check the solution
+if termination_status(model) == MOI.OPTIMAL
+    println("Optimal solution found!")
+    println("Normalized Total Cost: ", normalized_cost)
+    println("Objective value: ", objective_value(model))
+else
+    println("No optimal solution found.")
+end
